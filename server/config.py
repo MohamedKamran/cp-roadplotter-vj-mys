@@ -1,9 +1,21 @@
 """Central settings. Every value can be overridden with an environment variable
 of the same name prefixed with POTHOLE_ (e.g. POTHOLE_CONF_THRESHOLD=0.5)."""
+import json
 import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _model_meta():
+    """models/model.json, written by scripts/download_pretrained.py: imgsz, task, source."""
+    try:
+        return json.loads((ROOT / "models" / "model.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+MODEL_META = _model_meta()
 
 
 def _env(name, default, cast=str):
@@ -26,7 +38,7 @@ class Settings:
 
     # --- detection model ---
     # First existing file wins. CoreML (.mlpackage) is fastest on Apple Silicon.
-    # setup.sh downloads a pretrained YOLOv8m pothole model (HRP4K) into models/pothole.pt
+    # setup.sh downloads a pretrained pothole model into models/pothole.pt (see model_catalog.py)
     MODEL_CANDIDATES = [
         _env("MODEL_PATH", ""),
         str(ROOT / "models" / "pothole.mlpackage"),
@@ -34,8 +46,12 @@ class Settings:
     ]
     MOCK_DETECTOR = _env("MOCK", False, bool)   # fake detections for UI testing
     CONF_THRESHOLD = _env("CONF_THRESHOLD", 0.30, float)
-    # the pretrained model was trained on 4K frames at 1536 px; potholes vanish at 640
-    IMG_SIZE = _env("IMG_SIZE", 1280, int)
+    # input size the model was trained for (from models/model.json); override with POTHOLE_IMG_SIZE
+    IMG_SIZE = _env("IMG_SIZE", MODEL_META.get("imgsz", 1280), int)
+    MODEL_TASK = MODEL_META.get("task", "detect")
+    # which of the model's classes count as potholes: comma-separated name fragments.
+    # e.g. POTHOLE_CLASSES=pothole,road damage to also keep PotholeNet's "road damage" class
+    CLASSES = [c.strip().lower() for c in _env("CLASSES", "pothole").split(",") if c.strip()]
 
     # --- camera defaults (scanner app can override per device) ---
     DEFAULT_CAMERA_HEIGHT_M = _env("CAMERA_HEIGHT_M", 1.2, float)

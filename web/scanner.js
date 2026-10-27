@@ -37,6 +37,7 @@
     defaults = { ...defaults, height: c.camera_height_m, tilt: c.camera_tilt_deg, fov: c.hfov_deg };
     loadSettings();
     if (c.detector_mode === 'mock') setPill('pillLat', 'warn', 'Mock detector');
+    if (c.detector_mode === 'preview') { preview = true; setPill('pillLat', 'warn', 'Preview: fake results'); }
   }).catch(loadSettings);
 
   // ---------- status pills ----------
@@ -94,7 +95,28 @@
   // ---------- WebSocket ----------
   let ws = null, backoff = 500, inFlight = 0;
   const sentAt = new Map();
+  // Preview mode (scripts/preview_frontend.py): no server-side detection, so answer
+  // each frame here with a fake result shaped exactly like the server's reply.
+  let preview = false;
+  function fakeSocket() {
+    const sock = { readyState: WebSocket.OPEN, close() { this.readyState = WebSocket.CLOSED; },
+      send(buf) {
+        const n = new DataView(buf).getUint32(0, false);
+        const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, n)));
+        const w = grab.width, h = grab.height, boxes = [];
+        if (Math.random() < 0.12) {
+          const cx = w * (0.35 + Math.random() * 0.3), cy = h * (0.62 + Math.random() * 0.2);
+          const bw = w * (0.06 + Math.random() * 0.1), bh = h * (0.03 + Math.random() * 0.04);
+          boxes.push({ x1: cx - bw / 2, y1: cy - bh / 2, x2: cx + bw / 2, y2: cy + bh / 2, conf: +(0.5 + Math.random() * 0.4).toFixed(2) });
+        }
+        const reply = { seq: meta.seq, boxes, saved: boxes.map(() => Date.now()), ms: 40, img_w: w, img_h: h };
+        setTimeout(() => sock.onmessage?.({ data: JSON.stringify(reply) }), 80 + Math.random() * 120);
+      } };
+    return sock;
+  }
+
   function connect() {
+    if (preview) { ws = fakeSocket(); ws.onmessage = onResult; inFlight = 0; setPill('pillConn', 'ok', 'Preview'); return; }
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/scan`;
     ws = new WebSocket(url);
     setPill('pillConn', 'warn', 'Connecting…');
@@ -104,19 +126,21 @@
       if (running) setTimeout(connect, backoff = Math.min(backoff * 2, 5000));
     };
     ws.onerror = () => ws.close();
-    ws.onmessage = (ev) => {
-      inFlight = Math.max(0, inFlight - 1);
-      const r = JSON.parse(ev.data);
-      if (r.error) { console.warn('server:', r.error); return; }
-      const t = sentAt.get(r.seq); sentAt.delete(r.seq);
-      if (t) $('pillLat').lastElementChild.textContent = `${Math.round(performance.now() - t)} ms`;
-      if (r.boxes.length) drawBoxes(r);
-      if (r.saved.length) {
-        counts.saved += r.saved.length; render();
-        $('flash').classList.add('on'); setTimeout(() => $('flash').classList.remove('on'), 250);
-        navigator.vibrate?.(60);
-      }
-    };
+    ws.onmessage = onResult;
+  }
+
+  function onResult(ev) {
+    inFlight = Math.max(0, inFlight - 1);
+    const r = JSON.parse(ev.data);
+    if (r.error) { console.warn('server:', r.error); return; }
+    const t = sentAt.get(r.seq); sentAt.delete(r.seq);
+    if (t) $('pillLat').lastElementChild.textContent = `${Math.round(performance.now() - t)} ms`;
+    if (r.boxes.length) drawBoxes(r);
+    if (r.saved.length) {
+      counts.saved += r.saved.length; render();
+      $('flash').classList.add('on'); setTimeout(() => $('flash').classList.remove('on'), 250);
+      navigator.vibrate?.(60);
+    }
   }
 
   function pack(meta, jpegBuf) {
@@ -170,7 +194,7 @@
     for (const b of r.boxes) {
       const x = ox + b.x1 * s, y = oy + b.y1 * s;
       octx.strokeRect(x, y, (b.x2 - b.x1) * s, (b.y2 - b.y1) * s);
-      octx.fillText(`pothole ${Math.round(b.conf * 100)}%`, x, Math.max(14, y - 6));
+      octx.fillText(`${b.label || 'pothole'} ${Math.round(b.conf * 100)}%`, x, Math.max(14, y - 6));
     }
     clearTimeout(clearTimer);
     clearTimer = setTimeout(() => octx.clearRect(0, 0, W, H), 700);

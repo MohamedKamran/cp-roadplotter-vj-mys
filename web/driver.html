@@ -48,6 +48,9 @@
   .round { width: 44px; height: 44px; padding: 0; display: grid; place-items: center; border-radius: 50%; }
   .round.on { background: var(--cone); border-color: var(--cone); color: #1d1206; }
   @media (min-width: 720px) { .panel { left: auto; width: 420px; } .alert { left: auto; width: 520px; } }
+  .toast { bottom: calc(150px + env(safe-area-inset-bottom)); width: min(92vw, 420px); }
+  .toast .panel-row { flex-wrap: nowrap; }
+  .toast .btn { flex: 1; }
   .me { width: 18px; height: 18px; border-radius: 50%; background: #4aa3ff; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(74, 163, 255, .25); }
 </style>
 </head>

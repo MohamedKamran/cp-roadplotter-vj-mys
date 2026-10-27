@@ -1,6 +1,6 @@
 # Pothole Cloud (prototype)
 
-Phones scan roads and stream frames to a Mac. The Mac finds potholes with a pretrained YOLOv8m pothole model, stores them, works out where each pothole really is, scores it with a local SLM, and warns drivers on a map as they approach.
+Phones scan roads and stream frames to a Mac. The Mac finds potholes with a pretrained pothole model (PotholeNet, trained on Indian city roads), stores them, works out where each pothole really is, scores it with a local SLM, and warns drivers on a map as they approach.
 
 Everything runs locally on one Mac: a FastAPI server, a SQLite file, a photos folder and two Jupyter notebooks.
 
@@ -19,9 +19,25 @@ Everything runs locally on one Mac: a FastAPI server, a SQLite file, a photos fo
 | `web/` | Home page, scanner app, driver app |
 | `notebooks/01_train_yolo26.ipynb` | Optional, later: train your own model on your roads |
 | `notebooks/02_postprocess.ipynb` | DB1 → DB.F: locate, merge, score |
-| `scripts/seed_demo.py` | Fake drives past known potholes, for testing |
-| `scripts/download_pretrained.py` | Download the pretrained pothole model (setup.sh runs it) |
+| `scripts/preview_frontend.py` | Preview the web apps with fake data, no installs needed |
+| `scripts/seed_demo.py` | Fake drives past known potholes, for testing the real pipeline |
+| `scripts/download_pretrained.py` | Download a pretrained pothole model (setup.sh runs it) |
+| `scripts/compare_models.py` | Try several models on your own photos, side by side |
+| `server/model_catalog.py` | The pretrained models the scripts know about |
 | `scripts/export_coreml.py` | Convert the model to CoreML |
+
+## Preview the apps (no installs)
+
+To check the screens without installing anything, use the Python that comes with macOS:
+
+```bash
+python3 scripts/preview_frontend.py            # http://localhost:8000 on this Mac
+python3 scripts/preview_frontend.py --https    # https://<mac-ip>:8443 for phones on your Wi-Fi
+```
+
+It serves the real pages with fake potholes and fake detections; nothing is saved. Open `/driver?sim` to watch a test car drive the demo road and trigger the countdown. Add `--lat`, `--lon` and `--heading` to put the demo road near you. The map tiles need internet.
+
+`/driver?sim` also works on the real server: every route you plan gets driven by a test car instead of your GPS.
 
 ## Quick start
 
@@ -42,7 +58,7 @@ Then on the home page press **Run post-processing**, open **Drive**, and you'll 
 
 ## The flow
 
-1. **Scan** (`/scanner`): mount the phone (landscape is best), set its height and tilt in Settings, press Start. Frames (1280 px by default) go to the server at 5 fps over `/ws/scan`; frames with potholes are saved to `data/photos/` and a row per box goes into DB1.
+1. **Scan** (`/scanner`): mount the phone (landscape is best), set its height and tilt in Settings, press Start. Frames (1280 px by default; 960 px is plenty for the 768 px default model) go to the server at 5 fps over `/ws/scan`; frames with potholes are saved to `data/photos/` and a row per box goes into DB1.
 2. **Post-process**: press the button on the home page (`POST /process` runs the notebook with papermill), or open `notebooks/02_postprocess.ipynb` in Jupyter and Run All. It:
    - turns each box into a real pothole position using mount height, tilt, field of view and heading;
    - merges sightings of the same pothole (radius grows with poor GPS);
@@ -52,23 +68,37 @@ Then on the home page press **Run post-processing**, open **Drive**, and you'll 
 
 ## The detection model
 
-`setup.sh` downloads **`dronefreak/hrp4k-yolov8m`** from Hugging Face into `models/pothole.pt` and, on a Mac, exports it to `models/pothole.mlpackage` for the Neural Engine. To fetch it again or try another model:
+`setup.sh` downloads a ready-trained model into `models/pothole.pt`, saves its settings (input size, classes) in `models/model.json`, and on a Mac exports it to CoreML. Three are available:
+
+| Preset | Model | Trained on | Input | Licence |
+| --- | --- | --- | --- | --- |
+| `potholenet` (default) | YOLO11m | ~23k street photos from Indian cities; classes pothole, road damage, garbage | 768 px | MIT |
+| `hrp4k` | YOLOv8m | 4K road photos; best on small, distant potholes | 1280 px | AGPL-3.0 |
+| `pothole-seg` | YOLOv8m-seg | Mostly close-up potholes, with outlines | 640 px | see model card |
+
+The authors' accuracy figures are on their own test sets, so they don't tell you which is best on your roads. Check with your own photos:
 
 ```bash
-.venv/bin/python scripts/download_pretrained.py --force
-.venv/bin/python scripts/download_pretrained.py --repo <hf-repo> --file best.pt --force
+.venv/bin/python scripts/compare_models.py --images ~/Desktop/road_photos
 ```
 
-What to expect from it:
+It downloads each candidate into `models/candidates/` (your active model isn't touched) and writes one side-by-side image per photo into `data/compare/`. Then switch:
 
-- It was trained on 4K road photos at 1536 px, and most potholes are small in the frame. That's why the server runs at 1280 px (`POTHOLE_IMG_SIZE`) and the scanner sends 1280 px frames. At 640 px it misses most potholes.
-- On its own test set it finds about 45% of potholes (recall) and about 60% of its detections are real (precision). Scanning each road from several frames and passes, plus the "seen 3 times" rule, makes up for a lot of that.
-- Its photos are taken from a person's eye view; a dashboard mount looks a bit different, so expect some loss.
-- Licence: AGPL-3.0 (same as Ultralytics). Fine for a prototype; check it before any commercial use.
+```bash
+.venv/bin/python scripts/download_pretrained.py --preset hrp4k --force    # or potholenet / pothole-seg
+```
 
-The server picks the first model it finds: `models/pothole.mlpackage`, then `models/pothole.pt`. With neither, it runs in mock mode. To swap models, replace `models/pothole.pt`, run `.venv/bin/python scripts/export_coreml.py`, and restart.
+and restart the server. `--list` shows the presets; `--repo <hf-repo> --file <weights.pt> --imgsz <px>` takes any other model.
 
-**Training your own later (optional):** once the scanner has saved a few hundred real frames, label them and run `notebooks/01_train_yolo26.ipynb`. Set `BASE_MODEL = '../models/pothole.pt'` to fine-tune the pretrained pothole model rather than starting from scratch. A Colab/Kaggle GPU is much faster than the Mac.
+Only classes named like "pothole" are kept. PotholeNet also has a "road damage" class (cracks, worn and broken surface), which may catch shallow, eroded concrete. To keep it too:
+
+```bash
+POTHOLE_CLASSES="pothole,road damage" ./run_server.sh
+```
+
+The server picks `models/pothole.mlpackage` first, then `models/pothole.pt`. If the CoreML file fails to load, it falls back to the `.pt` file. With neither, it runs in mock mode.
+
+**Training your own later (optional):** no pretrained model will be perfect on your exact roads. Once the scanner has saved a few hundred real frames, label them and run `notebooks/01_train_yolo26.ipynb` with `BASE_MODEL = '../models/pothole.pt'` to fine-tune the current model. Include frames of plain road with no pothole. A Colab/Kaggle GPU is much faster than the Mac.
 
 ## Endpoints
 
@@ -91,7 +121,8 @@ Set as environment variables before `./run_server.sh`, e.g. `POTHOLE_CONF_THRESH
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `POTHOLE_CONF_THRESHOLD` | 0.30 | Minimum detection confidence |
-| `POTHOLE_IMG_SIZE` | 1280 | Model input size; re-run `export_coreml.py` after changing it |
+| `POTHOLE_IMG_SIZE` | from `models/model.json` | Model input size; re-run `export_coreml.py` after changing it |
+| `POTHOLE_CLASSES` | pothole | Class names to keep, comma-separated |
 | `POTHOLE_CAMERA_HEIGHT_M` | 1.2 | Default mount height (the scanner app can override it) |
 | `POTHOLE_CAMERA_TILT_DEG` | 8 | Default tilt below the horizon |
 | `POTHOLE_HFOV_DEG` | 66 | Default horizontal field of view |

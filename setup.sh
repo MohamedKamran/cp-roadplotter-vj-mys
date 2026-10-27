@@ -90,7 +90,7 @@ if [ -e models/pothole.mlpackage ] || [ -e models/pothole.pt ]; then
 elif [ "${SKIP_MODEL:-0}" = "1" ]; then
   warn "Skipped (SKIP_MODEL=1). The server runs in MOCK mode until models/pothole.pt exists."
 else
-  echo "    Downloading the pretrained YOLOv8m pothole model (HRP4K, about 50 MB, AGPL-3.0)"
+  echo "    Downloading the pretrained pothole model (PotholeNet: YOLO11m, Indian roads, about 40 MB, MIT)"
   "$PY" scripts/download_pretrained.py \
     || warn "Download failed. Run later: .venv/bin/python scripts/download_pretrained.py (server uses MOCK mode until then)"
 fi

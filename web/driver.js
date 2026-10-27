@@ -4,6 +4,7 @@
   const SEV_RANK = { Low: 0, Medium: 1, High: 2, Critical: 3 };
   const SEV_COLOR = { Low: '#6cc287', Medium: '#f2c230', High: '#ff7a1a', Critical: '#e5484d' };
   const R = 6371000, rad = (d) => d * Math.PI / 180, deg = (r) => r * 180 / Math.PI;
+  const SIM = new URLSearchParams(location.search).has('sim');
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   // ---------- settings ----------
@@ -114,6 +115,7 @@
   function clearRoute() {
     [routeLine, startMarker, endMarker].forEach((l) => l && map.removeLayer(l));
     routeLine = startMarker = endMarker = null; route = null; start = null;
+    clearInterval(simTimer);
   }
   function setStart(p) {
     start = p;
@@ -124,10 +126,14 @@
     const p = [e.latlng.lat, e.latlng.lng];
     if (mode === 'pickStart') return setStart(p);
     if (mode !== 'pickEnd') return;
-    endMarker = L.circleMarker(p, { radius: 8, color: '#fff', weight: 3, fillColor: '#ff7a1a', fillOpacity: 1 }).addTo(map);
+    await planRoute(start, p);
+  });
+
+  async function planRoute(a, b) {
+    endMarker = L.circleMarker(b, { radius: 8, color: '#fff', weight: 3, fillColor: '#ff7a1a', fillOpacity: 1 }).addTo(map);
     $('routeMsg').textContent = 'Finding the route…';
     try {
-      const res = await fetch(`/route-potholes?start=${start[0]},${start[1]}&end=${p[0]},${p[1]}`);
+      const res = await fetch(`/route-potholes?start=${a[0]},${a[1]}&end=${b[0]},${b[1]}`);
       if (!res.ok) throw new Error((await res.json()).detail);
       route = await res.json();
       routeLine = L.polyline(route.coords, { color: '#ff7a1a', weight: 6, opacity: 0.85 }).addTo(map);
@@ -139,11 +145,12 @@
         (route.severe_count ? `, <b>${route.severe_count}</b> severe` : '');
       setMode('route');
       follow = false; $('followBtn').classList.remove('on');
+      if (SIM) simulateDrive(route.coords);
     } catch (err) {
       $('routeMsg').textContent = `No route: ${err.message}`;
       map.removeLayer(endMarker); endMarker = null; setMode('pickEnd');
     }
-  });
+  }
 
   // ---------- follow ----------
   let follow = true;
@@ -258,23 +265,54 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
   keepAwake();
 
-  if (!('geolocation' in navigator)) {
+  function onFix(here, gpsHeading, speed) {
+    if (gpsHeading != null && !Number.isNaN(gpsHeading) && (speed || 0) > 1) myHeading = gpsHeading;
+    else if (prev && dist(prev, here) > 8) myHeading = bearing(prev, here);
+    if (!prev || dist(prev, here) > 8) prev = here;
+    const first = !me; me = here;
+    meMarker.setLatLng(me); if (first) { meMarker.addTo(map); map.setView(me, 16); setMode(mode); }
+    else if (follow) map.panTo(me, { animate: true });
+    if (!route && (!lastLoad || dist(lastLoad, me) > 1000)) { lastLoad = me; loadNear(me); }
+    updateAlert();
+  }
+
+  // ---------- simulated drive (open /driver?sim) ----------
+  // Instead of GPS, a fake car drives each planned route at 40 km/h, so alerts can be tested at a desk.
+  let simTimer = null;
+  function simulateDrive(coords) {
+    clearInterval(simTimer);
+    const STEP = 40 / 3.6 / 2;            // metres per half second at 40 km/h
+    let i = 0, along = 0;
+    follow = true; $('followBtn').classList.add('on');
+    simTimer = setInterval(() => {
+      if (!route) { clearInterval(simTimer); return; }
+      along += STEP;
+      while (i < coords.length - 1 && along > dist(coords[i], coords[i + 1])) { along -= dist(coords[i], coords[i + 1]); i++; }
+      if (i >= coords.length - 1) {          // arrived: pause, then drive the route again
+        clearInterval(simTimer); setTimeout(() => route && simulateDrive(coords), 3000); return;
+      }
+      const a = coords[i], b = coords[i + 1], t = along / Math.max(0.01, dist(a, b));
+      onFix([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], bearing(a, b), STEP * 2);
+    }, 500);
+  }
+
+  if (SIM) {
+    $('routeMsg').textContent = 'Simulated drive: plan a route and a test car will drive it.';
+    fetch('/api/config').then((r) => r.json()).then((c) => {
+      if (!c.demo_start || !c.demo_end) return;
+      onFix(c.demo_start, null, 0);          // preview server: drive the demo road straight away
+      setStart(c.demo_start);
+      planRoute(c.demo_start, c.demo_end);
+    }).catch(() => {});
+  } else if (!('geolocation' in navigator)) {
     $('routeMsg').textContent = 'This browser has no location access.';
   } else {
-    navigator.geolocation.watchPosition((pos) => {
-      const c = pos.coords, here = [c.latitude, c.longitude];
-      if (c.heading != null && !Number.isNaN(c.heading) && (c.speed || 0) > 1) myHeading = c.heading;
-      else if (prev && dist(prev, here) > 8) myHeading = bearing(prev, here);
-      if (!prev || dist(prev, here) > 8) prev = here;
-      const first = !me; me = here;
-      meMarker.setLatLng(me); if (first) { meMarker.addTo(map); map.setView(me, 16); setMode(mode); }
-      else if (follow) map.panTo(me, { animate: true });
-      if (!route && (!lastLoad || dist(lastLoad, me) > 1000)) { lastLoad = me; loadNear(me); }
-      updateAlert();
-    }, (e) => {
-      if (e.code === 1) $('routeMsg').textContent = 'Location is blocked. Allow it in the browser to get alerts.';
-      else if (!me) $('routeMsg').textContent = 'Waiting for location…';   // brief GPS timeouts are normal
-    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    navigator.geolocation.watchPosition(
+      (pos) => onFix([pos.coords.latitude, pos.coords.longitude], pos.coords.heading, pos.coords.speed),
+      (e) => {
+        if (e.code === 1) $('routeMsg').textContent = 'Location is blocked. Allow it in the browser to get alerts.';
+        else if (!me) $('routeMsg').textContent = 'Waiting for location…';   // brief GPS timeouts are normal
+      }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
   }
   setInterval(() => { if (me && !route) loadNear(me); }, 60000);
 })();

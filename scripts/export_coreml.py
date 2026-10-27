@@ -25,6 +25,7 @@ def main():
         sys.exit(f"Not found: {weights}. Run scripts/download_pretrained.py first.")
 
     from ultralytics import YOLO
+    # settings.IMG_SIZE already follows models/model.json, so the export matches the server
     exported = Path(YOLO(str(weights)).export(format="coreml", imgsz=args.imgsz, half=True))
     target = ROOT / "models" / "pothole.mlpackage"
     if target.exists():
